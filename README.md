@@ -791,3 +791,156 @@ La matrice, le login Docker Hub, les deux tags et la commande de revert sont inc
 
 - Un seul run `main.yml` par push, avec le graphe `test / test-backend` suivi de `Matrix: build-and-push` ou de `rollback`.
 - Le préfixe `test /` dans le nom du job confirme l'appel du reusable workflow.
+
+---
+
+### Bonus : Analyse de sécurité OWASP
+
+#### Objectif
+
+Ajouter des contrôles de sécurité à la pipeline, sur deux niveaux :
+
+- le **code** du projet, analysé par SonarQube Cloud avec ses règles de sécurité classées selon l'OWASP Top 10 ;
+- les **dépendances** Maven, comparées à la base de vulnérabilités connues (CVE) du NVD avec OWASP Dependency-Check.
+
+Les deux sont complémentaires : Sonar détecte les failles écrites dans notre code, Dependency-Check celles présentes dans les librairies utilisées.
+
+#### OWASP Top 10 dans SonarQube Cloud
+
+Aucune configuration supplémentaire n'est nécessaire : l'analyse Sonar existante applique déjà les règles de sécurité du profil Sonar way, chacune rattachée à une catégorie OWASP Top 10. Le rapport dédié (Security Reports) est réservé au plan Enterprise, mais en plan gratuit les résultats se consultent par filtre :
+
+- **Issues** > filtre Security Category > OWASP Top 10 ;
+- **Security Hotspots** : code sensible à vérifier manuellement (cryptographie, configuration, accès…).
+
+#### Secret GitHub ajouté
+
+| Secret | Contenu |
+|---|---|
+| `NVD_API_KEY` | Clé API gratuite du NVD (nvd.nist.gov/developers/request-an-api-key) |
+
+Sans clé, l'API du NVD limite fortement le débit et le premier téléchargement de la base peut dépasser l'heure.
+
+#### Workflow `test-backend.yml`
+
+```yaml
+name: Test backend
+
+on:
+  # called by main.yml
+  workflow_call:
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      # checkout with full git history, required by SonarCloud
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # setup JDK 21 (Temurin) with Maven dependency cache
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # build + unit and integration tests (Testcontainers) + SonarCloud analysis
+      - name: Build, test and SonarCloud
+        working-directory: simple-api
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+
+      # restore the NVD database from a previous run
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+          restore-keys: nvd-
+
+      # scan dependencies against the NVD CVE database, fail on CVSS >= 7
+      - name: OWASP Dependency-Check
+        id: dependency-check
+        working-directory: simple-api
+        run: mvn -B org.owasp:dependency-check-maven:check -DnvdApiKey=${{ secrets.NVD_API_KEY }} -DfailBuildOnCVSS=7 -Dformat=HTML
+
+      # save the NVD database even if vulnerabilities were found
+      - uses: actions/cache/save@v4
+        if: always() && steps.dependency-check.outcome != 'skipped'
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.dependency-check.outcome != 'skipped'
+        with:
+          name: dependency-check-report
+          path: simple-api/target/dependency-check-report.html
+```
+
+| Élément | Rôle |
+|---|---|
+| `org.owasp:dependency-check-maven:check` | Plugin appelé par son nom complet, aucune modification du `pom.xml` nécessaire |
+| `-DnvdApiKey` | Authentifie les appels à l'API du NVD |
+| `-DfailBuildOnCVSS=7` | Fait échouer le job si une dépendance a une CVE de score CVSS supérieur ou égal à 7 (High ou Critical) |
+| `-Dformat=HTML` | Génère un rapport lisible dans `target/dependency-check-report.html` |
+| `actions/cache/restore` | Récupère la base NVD du run précédent grâce au préfixe `nvd-` |
+| `actions/cache/save` + `always()` | Sauvegarde la base même si des CVE font échouer le job |
+| `key: nvd-${{ github.run_id }}` | Clé unique à chaque run : le cache est toujours réenregistré avec la base à jour |
+| `outcome != 'skipped'` | Pas de sauvegarde ni d'upload si une étape précédente a déjà échoué |
+| `actions/upload-artifact` | Rend le rapport HTML téléchargeable depuis la page du run |
+
+#### Modification de `main.yml`
+
+Ajout d'un déclencheur manuel :
+
+```yaml
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+  workflow_dispatch:
+```
+
+| Élément | Rôle |
+|---|---|
+| `workflow_dispatch` | Ajoute un bouton Run workflow dans Actions > CI/CD pour relancer la pipeline sur la branche choisie sans pousser de commit |
+
+Le bouton n'apparaît qu'une fois la modification présente sur `main`. En lancement manuel, `build-and-push` et `rollback` sont ignorés car filtrés par `github.event_name == 'push'`.
+
+#### Problèmes rencontrés
+
+**`sonar.qualitygate.wait` refusé.** L'option `-Dsonar.qualitygate.wait=true` devait faire échouer le job si la Quality Gate échoue. L'analyse était bien envoyée, mais la vérification finale échouait avec `Not authorized or project not found`, malgré un token personnel valide (utilisé d'après SonarQube Cloud), des clés de projet et d'organisation correctes et un projet public. L'option a été retirée. La Quality Gate reste visible via la check `SonarCloud Code Analysis` sur les pull requests, qui peut être rendue obligatoire dans la protection de `main` (Settings > Branches > Require status checks to pass).
+
+**Token SonarQube Cloud.** L'ancien `SONAR_TOKEN` a été remplacé par un personal token (My Account > Security). Il expire au bout de 30 jours : passé ce délai, il faut le regénérer et mettre à jour le secret.
+
+**Cache NVD non sauvegardé en cas d'échec.** `actions/cache` ne sauvegarde qu'en cas de succès du job. Si Dependency-Check trouve une CVE, la base serait retéléchargée à chaque run. Correction : séparation en `cache/restore` et `cache/save` avec `if: always()`.
+
+**Premier run long.** Le premier run télécharge toute la base NVD (plusieurs minutes). Le message `Cache not found for input keys: nvd-…` est alors normal. Les runs suivants ne font qu'une mise à jour incrémentale.
+
+**Risque de rollback.** Un push direct sur `main` avec une CVE détectée déclencherait le revert automatique. Les modifications ont donc d'abord été testées sur `develop`.
+
+#### Consulter les résultats
+
+| Où | Ce qu'on y trouve |
+|---|---|
+| Actions > run > `test / test-backend` | Statut de chaque step et logs bruts (`Tests run: ...`, CVE détectées) |
+| Actions > run > section Artifacts | Rapport HTML `dependency-check-report` |
+| SonarQube Cloud > Issues, filtre OWASP Top 10 | Vulnérabilités du code classées par catégorie OWASP |
+| SonarQube Cloud > Security Hotspots | Code sensible à revoir manuellement |
+| Pull request > checks | `SonarCloud Code Analysis` avec le statut de la Quality Gate |
+
+#### Comportement obtenu
+
+| Événement | Tests + Sonar | Dependency-Check | Build and push | Rollback |
+|---|---|---|---|---|
+| Push sur `develop` | Oui | Oui | Skipped | Skipped |
+| Pull request | Oui | Oui | Skipped | Skipped |
+| Lancement manuel | Oui | Oui | Skipped | Skipped |
+| Push ou merge sur `main`, aucune CVE ≥ 7 | Oui | Oui | Oui | Skipped |
+| Push ou merge sur `main`, CVE ≥ 7 | Oui | Échec | Skipped | Oui |
+
+#### Résultat
+
+- 16 unit tests et 13 integration tests au vert, analyse SonarQube Cloud avec Quality Gate passed.
+- Dépendances scannées à chaque run, rapport HTML disponible dans les Artifacts.
+- Une dépendance vulnérable (CVSS ≥ 7) bloque la publication des images et déclenche le rollback sur `main`.
