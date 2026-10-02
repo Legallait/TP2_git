@@ -76,7 +76,7 @@ jobs:
           ref: main
           fetch-depth: 0
 
-      # revert the failing commit (-m 1 for a merge commit) and push it on main
+      # revert the failing commit and push it on main
       - name: Revert failing commit
         run: |
           SHA="${{ github.event.workflow_run.head_sha }}"
