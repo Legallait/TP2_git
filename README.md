@@ -338,3 +338,145 @@ jobs:
 - `Test backend` au vert sur `main` et sur `develop`.
 - `Build and push docker images` déclenché automatiquement après le run sur `main`, au vert en 1 min 24 s.
 - Aucun build d'image déclenché par le run sur `develop`.
+
+---
+
+### Bonus : Version tags sur les images
+
+#### Objectif
+
+Ne plus publier uniquement `latest`, qui est écrasé à chaque push : chaque image reçoit aussi un tag de version immuable, ce qui permet de savoir quel commit tourne et de revenir à une version précédente. Le push des images reste limité aux push et merge sur `main`.
+
+#### Choix du tag de version
+
+Le tag de version est le SHA court du commit testé, sous la forme `sha-xxxxxxx`.
+
+| Option | Retenue | Raison |
+|---|---|---|
+| Tag git `vX.Y.Z` | Non | Déclenche la pipeline sur un tag et non sur `main`, contraire à l'objectif |
+| `github.run_number` | Non | Lié au numéro de run, pas au code : un re-run change la version |
+| SHA du commit | Oui | Unique, immuable, et relie directement l'image au commit sur GitHub |
+
+#### Modifications de `build-and-push.yml`
+
+Ajout d'une étape qui calcule le tag, avant le login :
+
+```yaml
+      - name: Compute image version
+        id: version
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
+```
+
+Chaque `build-push-action` publie désormais deux tags :
+
+```yaml
+      - name: Build image and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./simple-api
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:${{ steps.version.outputs.tag }}
+          push: true
+```
+
+Même modification pour `database` et `httpd`. Le déclenchement (`workflow_run` sur `main`, `conclusion == 'success'`, `event == 'push'`) et `test-backend.yml` sont inchangés.
+
+| Élément | Rôle |
+|---|---|
+| `id: version` | Permet de référencer la sortie de l'étape avec `steps.version.outputs` |
+| `workflow_run.head_sha` | SHA du commit testé par `Test backend`, et non celui du workflow courant |
+| `${SHA::7}` | Garde les 7 premiers caractères, comme l'affichage court de git |
+| `$GITHUB_OUTPUT` | Expose la valeur `tag` aux étapes suivantes |
+| `tags: \|` | Liste multi-ligne : une même image poussée sous plusieurs tags |
+
+#### Comportement obtenu
+
+| Événement | Pipeline de push | Tags publiés |
+|---|---|---|
+| Push sur `develop` | Non | Aucun |
+| Pull request | Non | Aucun |
+| Push ou merge sur `main`, tests OK | Oui | `latest` et `sha-xxxxxxx` |
+| Push ou merge sur `main`, tests KO | Non | Aucun |
+
+#### Problèmes rencontrés
+
+**Versioning par tag git abandonné.** Une première version déclenchait la publication sur les tags `v*.*.*`. Avec `workflow_run`, le filtre `branches: main` ne laisse pas passer les tags, et un tag poussé sur un commit déjà présent ne déclenche rien si le workflow n'y existe pas. Cette approche a été retirée au profit du SHA, qui respecte la règle de publication uniquement sur `main`.
+
+#### Résultat
+
+- Trois images publiées sur Docker Hub avec deux tags à chaque push sur `main` :
+    - `nicolases/tp-devops-simple-api:latest` et `:sha-xxxxxxx`
+    - `nicolases/tp-devops-database:latest` et `:sha-xxxxxxx`
+    - `nicolases/tp-devops-httpd:latest` et `:sha-xxxxxxx`
+- Retour à une version précédente possible avec `docker pull nicolases/tp-devops-simple-api:sha-xxxxxxx`.
+
+---
+
+### Bonus : Rollback si les tests échouent
+
+#### Objectif
+
+Si un push ou un merge sur `main` casse les tests, remettre automatiquement `main` dans le dernier état qui passait, au lieu de laisser la branche principale cassée.
+
+Les images ne sont déjà pas publiées quand les tests échouent : `latest` pointe donc toujours sur la dernière version validée. Le rollback porte sur le code de `main`.
+
+#### Job ajouté à `build-and-push.yml`
+
+```yaml
+  rollback:
+    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Revert failing commit
+        run: |
+          SHA="${{ github.event.workflow_run.head_sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if [ "$(git rev-list --parents -n 1 "$SHA" | wc -w)" -gt 2 ]; then
+            git revert --no-edit -m 1 "$SHA"
+          else
+            git revert --no-edit "$SHA"
+          fi
+          git push origin main
+```
+
+| Élément | Rôle |
+|---|---|
+| `conclusion == 'failure'` | Le job ne tourne que si `Test backend` a échoué, à l'inverse du job de build |
+| `event == 'push'` | Pas de rollback pour une pull request, qui n'a rien modifié sur `main` |
+| `permissions: contents: write` | Autorise le `GITHUB_TOKEN` à pousser sur `main` |
+| `ref: main` / `fetch-depth: 0` | Récupère `main` avec tout l'historique, nécessaire à `git revert` |
+| `git config user.*` | Identité du bot qui signe le commit de revert |
+| `git rev-list --parents` | Compte les parents du commit : plus de deux mots signifie un merge commit |
+| `git revert -m 1` | Pour un merge, annule les changements par rapport au premier parent, c'est-à-dire `main` |
+| `git revert --no-edit` | Crée un nouveau commit inverse, sans réécrire l'historique |
+| `git push origin main` | Publie le revert sur `main` |
+
+`git revert` est préféré à `git reset` : l'historique reste intact, le commit fautif reste visible et peut être corrigé puis réappliqué.
+
+#### Comportement obtenu
+
+| Résultat de `Test backend` sur `main` | Job exécuté |
+|---|---|
+| Success | `build-and-push-docker-image` |
+| Failure | `rollback` |
+
+- Un push fait avec le `GITHUB_TOKEN` ne déclenche pas de nouveau workflow : le revert ne relance pas `Test backend`, ce qui évite toute boucle.
+- Si plusieurs commits sont poussés en une fois, seul le dernier est annulé.
+- Si `main` est protégée par une branch protection qui interdit le push direct, le rollback échoue : il faut autoriser GitHub Actions dans la règle.
+
+#### Résultat
+
+- Un commit qui casse les tests sur `main` est annulé automatiquement par un commit `Revert "..."` signé `github-actions[bot]`.
+- Aucune image n'est publiée pour ce commit, Docker Hub garde la dernière version validée.
