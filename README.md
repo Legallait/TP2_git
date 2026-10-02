@@ -347,10 +347,6 @@ jobs:
 
 Ne plus publier uniquement `latest`, qui est écrasé à chaque push : chaque image reçoit aussi un tag de version immuable, ce qui permet de savoir quel commit tourne et de revenir à une version précédente. Le push des images reste limité aux push et merge sur `main`.
 
-#### Choix du tag de version
-
-Le tag de version est le SHA court du commit testé, sous la forme `sha-xxxxxxx`.
-
 | Option | Retenue | Raison |
 |---|---|---|
 | Tag git `vX.Y.Z` | Non | Déclenche la pipeline sur un tag et non sur `main`, contraire à l'objectif |
@@ -400,10 +396,6 @@ Même modification pour `database` et `httpd`. Le déclenchement (`workflow_run`
 | Pull request | Non | Aucun |
 | Push ou merge sur `main`, tests OK | Oui | `latest` et `sha-xxxxxxx` |
 | Push ou merge sur `main`, tests KO | Non | Aucun |
-
-#### Problèmes rencontrés
-
-**Versioning par tag git abandonné.** Une première version déclenchait la publication sur les tags `v*.*.*`. Avec `workflow_run`, le filtre `branches: main` ne laisse pas passer les tags, et un tag poussé sur un commit déjà présent ne déclenche rien si le workflow n'y existe pas. Cette approche a été retirée au profit du SHA, qui respecte la règle de publication uniquement sur `main`.
 
 #### Résultat
 
@@ -461,7 +453,7 @@ Les images ne sont déjà pas publiées quand les tests échouent : `latest` poi
 | `git rev-list --parents` | Compte les parents du commit : plus de deux mots signifie un merge commit |
 | `git revert -m 1` | Pour un merge, annule les changements par rapport au premier parent, c'est-à-dire `main` |
 | `git revert --no-edit` | Crée un nouveau commit inverse, sans réécrire l'historique |
-| `git push origin main` | Publie le revert sur `main` |
+| `git push origin main` | Publie le revert sur `main` |s
 
 `git revert` est préféré à `git reset` : l'historique reste intact, le commit fautif reste visible et peut être corrigé puis réappliqué.
 
