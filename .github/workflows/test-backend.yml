@@ -25,13 +25,28 @@ jobs:
         working-directory: simple-api
         run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }} -Dsonar.qualitygate.wait=true
 
+      # restore the NVD database from a previous run
+      - uses: actions/cache/restore@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+          restore-keys: nvd-
+
       # scan dependencies against the NVD CVE database, fail on CVSS >= 7
       - name: OWASP Dependency-Check
+        id: dependency-check
         working-directory: simple-api
         run: mvn -B org.owasp:dependency-check-maven:check -DnvdApiKey=${{ secrets.NVD_API_KEY }} -DfailBuildOnCVSS=7 -Dformat=HTML
 
+      # save the NVD database even if vulnerabilities were found
+      - uses: actions/cache/save@v4
+        if: always() && steps.dependency-check.outcome != 'skipped'
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: nvd-${{ github.run_id }}
+
       - uses: actions/upload-artifact@v4
-        if: always()
+        if: always() && steps.dependency-check.outcome != 'skipped'
         with:
           name: dependency-check-report
           path: simple-api/target/dependency-check-report.html
