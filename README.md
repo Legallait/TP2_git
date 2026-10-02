@@ -453,7 +453,7 @@ Les images ne sont déjà pas publiées quand les tests échouent : `latest` poi
 | `git rev-list --parents` | Compte les parents du commit : plus de deux mots signifie un merge commit |
 | `git revert -m 1` | Pour un merge, annule les changements par rapport au premier parent, c'est-à-dire `main` |
 | `git revert --no-edit` | Crée un nouveau commit inverse, sans réécrire l'historique |
-| `git push origin main` | Publie le revert sur `main` |s
+| `git push origin main` | Publie le revert sur `main` |
 
 `git revert` est préféré à `git reset` : l'historique reste intact, le commit fautif reste visible et peut être corrigé puis réappliqué.
 
@@ -472,3 +472,148 @@ Les images ne sont déjà pas publiées quand les tests échouent : `latest` poi
 
 - Un commit qui casse les tests sur `main` est annulé automatiquement par un commit `Revert "..."` signé `github-actions[bot]`.
 - Aucune image n'est publiée pour ce commit, Docker Hub garde la dernière version validée.
+
+---
+
+### Bonus : Simplification des workflows
+
+#### Objectif
+
+Réduire la taille et la répétition des deux workflows, sans changer leur comportement : mêmes déclencheurs, mêmes conditions, mêmes images publiées, même rollback.
+
+#### Workflow `test-backend.yml`
+
+```yaml
+name: Test backend
+
+on:
+  # tests run on main and develop
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      # checkout with full git history, required by SonarCloud
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # setup JDK 21 (Temurin) with Maven dependency cache
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # build + unit and integration tests (Testcontainers) + quality gate on SonarCloud
+      - name: Build, test and SonarCloud
+        working-directory: simple-api
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+```
+
+#### Workflow `build-and-push.yml`
+
+```yaml
+name: Build and push docker images
+
+on:
+  # triggered when the "Test backend" workflow ends on main
+  workflow_run:
+    workflows: ["Test backend"]
+    types: [completed]
+    branches: [main]
+
+jobs:
+  build-and-push:
+    # run only if tests passed, and only for a push or merge on main (not a pull request)
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    # one job per image: backend, database, httpd
+    strategy:
+      matrix:
+        include:
+          - { image: simple-api, context: simple-api }
+          - { image: database, context: database }
+          - { image: httpd, context: http-server }
+    steps:
+      # checkout the exact commit that was tested
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # login to Docker Hub with GitHub secrets
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # build and push with two tags: latest and the tested commit SHA
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.event.workflow_run.head_sha }}
+
+  rollback:
+    # run only if tests failed after a push or merge on main
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-24.04
+    # allows the GITHUB_TOKEN to push the revert commit on main
+    permissions:
+      contents: write
+    steps:
+      # checkout main with full history, required by git revert
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # revert the failing commit (-m 1 for a merge, plain revert otherwise) and push it on main
+      - run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit -m 1 $SHA || git revert --no-edit $SHA
+          git push
+```
+
+#### Changements
+s
+| Avant | Après | Gain |
+|---|---|---|
+| `mvn clean verify` puis `mvn -B verify ...:sonar` | Une seule commande `mvn -B verify ...:sonar` | Le projet n'est compilé et testé qu'une fois |
+| `--file ./simple-api/pom.xml` | `working-directory: simple-api` | Commande plus courte |
+| `echo ... \| docker login --password-stdin` | `docker/login-action@v3` | Action officielle, même sécurité du token |
+| 3 steps `build-push-action` copiés-collés | `strategy.matrix` avec 3 entrées | Un seul step, les 3 images buildées en parallèle |
+| Step `Compute image version` (`sha-${SHA::7}`) | `head_sha` utilisé directement dans `tags` | Un step en moins |
+| Test `git rev-list --parents` + `if/else` | `git revert -m 1 $SHA \|\| git revert $SHA` | Si le commit n'est pas un merge, `-m 1` échoue sans rien modifier et le revert simple prend le relais |
+| Listes YAML sur plusieurs lignes | Listes en ligne `[main, develop]` | Même sens, plus compact |
+
+Le `clean` est supprimé car le runner est neuf à chaque exécution : il n'y a aucun ancien build à effacer.
+
+#### Comportement conservé
+
+| Événement | Test backend | Build and push | Rollback |
+|---|---|---|---|
+| Push sur `develop` | Oui | Non | Non |
+| Pull request | Oui | Non | Non |
+| Push ou merge sur `main`, tests OK | Oui | Oui, `latest` et SHA du commit | Non |
+| Push ou merge sur `main`, tests KO | Oui | Non | Oui |
+
+#### Différences
+
+- Le tag de version est le SHA complet du commit au lieu de `sha-xxxxxxx`.
+- Les 3 images sont buildées en parallèle. Si une échoue, les autres sont annulées (comportement `fail-fast` par défaut de la matrix), ce qui équivaut à l'arrêt au premier échec de la version séquentielle.
+
+#### Résultat
+
+- Workflows plus courts, sans duplication pour les images.
+- Images publiées sur Docker Hub avec deux tags à chaque push sur `main` :
+    - `nicolases/tp-devops-simple-api:latest` et `:<sha>`
+    - `nicolases/tp-devops-database:latest` et `:<sha>`
+    - `nicolases/tp-devops-httpd:latest` et `:<sha>`

@@ -4,87 +4,60 @@ on:
   # triggered when the "Test backend" workflow ends on main
   workflow_run:
     workflows: ["Test backend"]
-    types:
-      - completed
-    branches:
-      - main
+    types: [completed]
+    branches: [main]
 
 jobs:
-  build-and-push-docker-image:
+  build-and-push:
     # run only if tests passed, and only for a push or merge on main (not a pull request)
-    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-24.04
-
+    # one job per image: backend, database, httpd
+    strategy:
+      matrix:
+        include:
+          - { image: simple-api, context: simple-api }
+          - { image: database, context: database }
+          - { image: httpd, context: http-server }
     steps:
       # checkout the exact commit that was tested
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha }}
 
-      # version tag from the tested commit
-      - name: Compute image version
-        id: version
-        run: |
-          SHA="${{ github.event.workflow_run.head_sha }}"
-          echo "tag=sha-${SHA::7}" >> "$GITHUB_OUTPUT"
-
       # login to Docker Hub with GitHub secrets
-      - name: Login to DockerHub
-        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
-
-      - name: Build image and push backend
-        uses: docker/build-push-action@v6
+      - uses: docker/login-action@v3
         with:
-          context: ./simple-api
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:${{ steps.version.outputs.tag }}
-          push: true
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
-      - name: Build image and push database
-        uses: docker/build-push-action@v6
+      # build and push with two tags: latest and the tested commit SHA
+      - uses: docker/build-push-action@v6
         with:
-          context: ./database
-          tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-database:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-database:${{ steps.version.outputs.tag }}
+          context: ${{ matrix.context }}
           push: true
-
-      - name: Build image and push httpd
-        uses: docker/build-push-action@v6
-        with:
-          context: ./http-server
           tags: |
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-httpd:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-httpd:${{ steps.version.outputs.tag }}
-          push: true
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.event.workflow_run.head_sha }}
 
   rollback:
     # run only if tests failed after a push or merge on main
-    if: ${{ github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push' }}
+    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-24.04
     # allows the GITHUB_TOKEN to push the revert commit on main
     permissions:
       contents: write
-
     steps:
       # checkout main with full history, required by git revert
-      - name: Checkout main
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: main
           fetch-depth: 0
 
-      # revert the failing commit and push it on main
-      - name: Revert failing commit
-        run: |
-          SHA="${{ github.event.workflow_run.head_sha }}"
+      # revert the failing commit (-m 1 for a merge, plain revert otherwise) and push it on main
+      - run: |
+          SHA=${{ github.event.workflow_run.head_sha }}
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          if [ "$(git rev-list --parents -n 1 "$SHA" | wc -w)" -gt 2 ]; then
-            git revert --no-edit -m 1 "$SHA"
-          else
-            git revert --no-edit "$SHA"
-          fi
-          git push origin main
+          git revert --no-edit -m 1 $SHA || git revert --no-edit $SHA
+          git push
