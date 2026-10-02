@@ -1,10 +1,8 @@
 name: Test backend
 
 on:
-  # tests run on main and develop
-  push:
-    branches: [main, develop]
-  pull_request:
+  # called by main.yml
+  workflow_call:
 
 jobs:
   test-backend:

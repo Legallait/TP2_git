@@ -1,16 +1,11 @@
 name: Build and push docker images
 
 on:
-  # triggered when the "Test backend" workflow ends on main
-  workflow_run:
-    workflows: ["Test backend"]
-    types: [completed]
-    branches: [main]
+  # For call on main.yml
+  workflow_call:
 
 jobs:
   build-and-push:
-    # run only if tests passed, and only for a push or merge on main (not a pull request)
-    if: github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push'
     runs-on: ubuntu-24.04
     # one job per image: backend, database, httpd
     strategy:
@@ -20,10 +15,7 @@ jobs:
           - { image: database, context: database }
           - { image: httpd, context: http-server }
     steps:
-      # checkout the exact commit that was tested
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       # login to Docker Hub with GitHub secrets
       - uses: docker/login-action@v3
@@ -38,26 +30,4 @@ jobs:
           push: true
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:latest
-            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.event.workflow_run.head_sha }}
-
-  rollback:
-    # run only if tests failed after a push or merge on main
-    if: github.event.workflow_run.conclusion == 'failure' && github.event.workflow_run.event == 'push'
-    runs-on: ubuntu-24.04
-    # allows the GITHUB_TOKEN to push the revert commit on main
-    permissions:
-      contents: write
-    steps:
-      # checkout main with full history, required by git revert
-      - uses: actions/checkout@v4
-        with:
-          ref: main
-          fetch-depth: 0
-
-      # revert the failing commit (-m 1 for a merge, plain revert otherwise) and push it on main
-      - run: |
-          SHA=${{ github.event.workflow_run.head_sha }}
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git revert --no-edit -m 1 $SHA || git revert --no-edit $SHA
-          git push
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.sha }}

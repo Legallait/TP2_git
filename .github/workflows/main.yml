@@ -1,0 +1,38 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  # tests and quality gate on every push and pull request
+  test:
+    uses: ./.github/workflows/test-backend.yml
+    secrets: inherit
+
+  # publish images only if tests passed
+  build-and-push:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build-and-push.yml
+    secrets: inherit
+
+  # revert the commit if tests failed after a push or merge on main
+  rollback:
+    needs: test
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit -m 1 ${{ github.sha }} || git revert --no-edit ${{ github.sha }}
+          git push
