@@ -207,3 +207,134 @@ La couverture de tests est remontée automatiquement grâce au plugin JaCoCo dé
 
 - Pipeline au vert en 2 min 37 s : tests, analyse Sonar, puis build et push des images.
 - Rapport disponible sur SonarQube Cloud avec le statut de la Quality Gate, les notes Reliability, Security et Maintainability, et la couverture de tests.
+
+---
+
+### Partie 4 : Going further, Split pipelines
+
+#### Objectif
+
+Séparer la pipeline unique en deux workflows :
+
+- `test-backend` lancé sur `develop` et `main` ;
+- `build-and-push-docker-image` lancé sur `main` uniquement, et seulement si `test-backend` a réussi.
+
+#### Nouvelle structure
+
+```
+.github/
+└── workflows/
+    ├── test-backend.yml
+    └── build-and-push.yml
+```
+
+Le fichier `main.yml` a été supprimé, et une branche `develop` a été créée.
+
+#### Workflow `test-backend.yml`
+
+```yaml
+name: Test backend
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Build and test with Maven
+        run: mvn clean verify --file ./simple-api/pom.xml
+
+      - name: SonarCloud analysis
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }} --file ./simple-api/pom.xml
+```
+
+Ce workflow ne fait que tester et analyser le code. Il ne publie aucune image.
+
+#### Workflow `build-and-push.yml`
+
+```yaml
+name: Build and push docker images
+
+on:
+  workflow_run:
+    workflows: ["Test backend"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  build-and-push-docker-image:
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+      - name: Build image and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./simple-api
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:latest
+          push: true
+
+      - name: Build image and push database
+        uses: docker/build-push-action@v6
+        with:
+          context: ./database
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-database:latest
+          push: true
+
+      - name: Build image and push httpd
+        uses: docker/build-push-action@v6
+        with:
+          context: ./http-server
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-httpd:latest
+          push: true
+```
+
+| Élément | Rôle |
+|---|---|
+| `on.workflow_run.workflows` | Surveille le workflow `Test backend`, le nom doit correspondre exactement |
+| `types: completed` | Déclenche à la fin du workflow surveillé, qu'il ait réussi ou échoué |
+| `branches: main` | Ne réagit qu'aux runs de `Test backend` sur `main` |
+| `conclusion == 'success'` | Ne build que si les tests ont réussi |
+| `event == 'push'` | Ne publie jamais d'image à partir d'une pull request |
+| `ref: ...head_sha` | Checkout du commit exact qui a été testé, et non du dernier commit de `main` |
+| `push: true` | Le filtre `branches: main` garantit déjà que l'on est sur `main` |
+
+#### Comportement obtenu
+
+| | `develop` | `main` |
+|---|---|---|
+| Test backend | Oui | Oui |
+| Build and push docker images | Non | Oui, si les tests ont réussi |
+
+- `workflow_run` ne fonctionne que si le fichier du workflow déclenché est présent sur la branche par défaut (`main`).
+
+#### Résultat
+
+- `Test backend` au vert sur `main` et sur `develop`.
+- `Build and push docker images` déclenché automatiquement après le run sur `main`, au vert en 1 min 24 s.
+- Aucun build d'image déclenché par le run sur `develop`.
