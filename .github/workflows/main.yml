@@ -14,6 +14,8 @@ jobs:
     steps:
       #checkout your github code using actions/checkout@v4
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       #do the same with another action (actions/setup-java@v4) that enable to setup jdk 21
       - name: Set up JDK 21
@@ -26,6 +28,10 @@ jobs:
       #finally build your app with the latest command
       - name: Build and test with Maven
         run: mvn clean verify --file ./simple-api/pom.xml
+
+      # quality gate
+      - name: SonarCloud analysis
+        run: mvn -B verify sonar:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }} --file ./simple-api/pom.xml
 
   # define job to build and publish docker image
   build-and-push-docker-image:
