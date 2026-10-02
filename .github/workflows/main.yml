@@ -11,7 +11,7 @@ jobs:
   test-backend:
     runs-on: ubuntu-24.04
     steps:
-    #checkout your github code using actions/checkout@v4
+      #checkout your github code using actions/checkout@v4
       - uses: actions/checkout@v4
 
       #do the same with another action (actions/setup-java@v4) that enable to setup jdk 21
@@ -25,3 +25,42 @@ jobs:
       #finally build your app with the latest command
       - name: Build and test with Maven
         run: mvn clean verify --file ./simple-api/pom.xml
+
+  # define job to build and publish docker image
+  build-and-push-docker-image:
+    # run only when code is compiling and tests are passing
+    needs: test-backend
+    runs-on: ubuntu-24.04
+
+    # steps to perform in job
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # login to Docker Hub with GitHub secrets (credentials never stored in the repo)
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+      - name: Build image and push backend
+        uses: docker/build-push-action@v6
+        with:
+          # relative path to the place where source code with Dockerfile is located
+          context: ./simple-api
+          # Note: tags has to be all lower-case
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:latest
+          # build on feature branches, push only on main branch
+          push: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build image and push database
+        uses: docker/build-push-action@v6
+        with:
+          context: ./database
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-database:latest
+          push: ${{ github.ref == 'refs/heads/main' }}
+
+      - name: Build image and push httpd
+        uses: docker/build-push-action@v6
+        with:
+          context: ./http-server
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-httpd:latest
+          push: ${{ github.ref == 'refs/heads/main' }}
