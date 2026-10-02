@@ -583,7 +583,6 @@ jobs:
 ```
 
 #### Changements
-s
 | Avant | Après | Gain |
 |---|---|---|
 | `mvn clean verify` puis `mvn -B verify ...:sonar` | Une seule commande `mvn -B verify ...:sonar` | Le projet n'est compilé et testé qu'une fois |
@@ -617,3 +616,178 @@ Le `clean` est supprimé car le runner est neuf à chaque exécution : il n'y a 
     - `nicolases/tp-devops-simple-api:latest` et `:<sha>`
     - `nicolases/tp-devops-database:latest` et `:<sha>`
     - `nicolases/tp-devops-httpd:latest` et `:<sha>`
+
+---
+
+### Bonus : Orchestration avec `main.yml`
+
+#### Objectif
+
+Remplacer le chaînage par `workflow_run` par un workflow principal unique, `main.yml`, qui appelle les deux autres comme des reusable workflows. L'enchaînement tests, publication et rollback est visible dans un seul graphe GitHub Actions.
+
+#### Nouvelle structure
+
+```
+.github/
+└── workflows/
+    ├── main.yml
+    ├── test-backend.yml
+    └── build-and-push.yml
+```
+
+Seul `main.yml` réagit aux push et pull requests. `test-backend.yml` et `build-and-push.yml` ne se lancent plus seuls.
+
+#### Workflow `main.yml`
+
+```yaml
+name: CI/CD
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+
+jobs:
+  # tests and quality gate on every push and pull request
+  test:
+    uses: ./.github/workflows/test-backend.yml
+    secrets: inherit
+
+  # publish images only if tests passed, after a push or merge on main
+  build-and-push:
+    needs: test
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    uses: ./.github/workflows/build-and-push.yml
+    secrets: inherit
+
+  # revert the commit if tests failed after a push or merge on main
+  rollback:
+    needs: test
+    if: failure() && github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git revert --no-edit -m 1 ${{ github.sha }} || git revert --no-edit ${{ github.sha }}
+          git push
+```
+
+| Élément | Rôle |
+|---|---|
+| `on.push` / `on.pull_request` | Mêmes déclencheurs que l'ancien `test-backend.yml` |
+| `uses: ./.github/workflows/...` | Appelle un reusable workflow du repo comme un job |
+| `secrets: inherit` | Transmet les secrets du repo au workflow appelé, qui n'y a pas accès par défaut |
+| `needs: test` | Le job attend la fin de `test` |
+| `github.event_name == 'push'` | Pas de publication ni de rollback pour une pull request |
+| `github.ref == 'refs/heads/main'` | Publication et rollback uniquement sur `main` |
+| `failure()` | Sans cette fonction, un job dont la dépendance a échoué est ignoré : elle autorise `rollback` à tourner après un échec |
+| `github.sha` | Commit qui a déclenché `main.yml`, donc celui qui vient d'être testé |
+
+#### Workflow `test-backend.yml`
+
+```yaml
+name: Test backend
+
+on:
+  # called by main.yml
+  workflow_call:
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-24.04
+    steps:
+      # checkout with full git history, required by SonarCloud
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # setup JDK 21 (Temurin) with Maven dependency cache
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # build + unit and integration tests (Testcontainers) + quality gate on SonarCloud
+      - name: Build, test and SonarCloud
+        working-directory: simple-api
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }}
+```
+
+#### Workflow `build-and-push.yml`
+
+```yaml
+name: Build and push docker images
+
+on:
+  # called by main.yml once tests passed on main
+  workflow_call:
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-24.04
+    # one job per image: backend, database, httpd
+    strategy:
+      matrix:
+        include:
+          - { image: simple-api, context: simple-api }
+          - { image: database, context: database }
+          - { image: httpd, context: http-server }
+    steps:
+      # checkout the commit that triggered main.yml, the one that was just tested
+      - uses: actions/checkout@v4
+
+      # login to Docker Hub with GitHub secrets
+      - uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # build and push with two tags: latest and the tested commit SHA
+      - uses: docker/build-push-action@v6
+        with:
+          context: ${{ matrix.context }}
+          push: true
+          tags: |
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:latest
+            ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.sha }}
+```
+
+#### Changements
+
+| Avant | Après | Raison |
+|---|---|---|
+| `test-backend.yml` déclenché par `push` et `pull_request` | `workflow_call`, appelé par `main.yml` | Un seul point d'entrée |
+| `build-and-push.yml` déclenché par `workflow_run` | `workflow_call` + `needs: test` dans `main.yml` | Dépendance explicite entre les jobs |
+| `if` sur `workflow_run.conclusion` et `workflow_run.event` | `if` sur `github.event_name` et `github.ref` dans `main.yml` | La réussite des tests est garantie par `needs` |
+| `ref: ${{ github.event.workflow_run.head_sha }}` | Checkout par défaut | Le contexte `github` est celui de `main.yml`, `github.sha` est déjà le commit testé |
+| Tag `${{ github.event.workflow_run.head_sha }}` | Tag `${{ github.sha }}` | Même valeur, accès direct |
+| Job `rollback` dans `build-and-push.yml` | Job `rollback` dans `main.yml`, avec `failure()` | `build-and-push.yml` n'est appelé qu'en cas de succès |
+| Secrets accessibles directement | `secrets: inherit` | Un reusable workflow ne reçoit pas les secrets par défaut |
+
+La matrice, le login Docker Hub, les deux tags et la commande de revert sont inchangés.
+
+#### Comportement obtenu
+
+| Événement | `test` | `build-and-push` | `rollback` |
+|---|---|---|---|
+| Push sur `develop` | Oui | Skipped | Skipped |
+| Pull request | Oui | Skipped | Skipped |
+| Push ou merge sur `main`, tests OK | Oui | Oui, `latest` et SHA du commit | Skipped |
+| Push ou merge sur `main`, tests KO | Oui | Skipped | Oui |
+
+- La contrainte de `workflow_run` (fichier du workflow déclenché obligatoirement présent sur `main`) disparaît.
+- Le commit de revert est poussé avec le `GITHUB_TOKEN` : il ne relance pas `main.yml`, ce qui évite toute boucle.
+
+#### Résultat
+
+- Un seul run `main.yml` par push, avec le graphe `test / test-backend` suivi de `Matrix: build-and-push` ou de `rollback`.
+- Le préfixe `test /` dans le nom du job confirme l'appel du reusable workflow.
