@@ -1,0 +1,48 @@
+name: Build and push docker images
+
+on:
+  # triggered when the "Test backend" workflow ends on main
+  workflow_run:
+    workflows: ["Test backend"]
+    types:
+      - completed
+    branches:
+      - main
+
+jobs:
+  build-and-push-docker-image:
+    # run only if tests passed, and only for a push (not a pull request)
+    if: ${{ github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push' }}
+    runs-on: ubuntu-24.04
+
+    steps:
+      # checkout the exact commit that was tested
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+
+      # login to Docker Hub with GitHub secrets
+      - name: Login to DockerHub
+        run: echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login --username ${{ secrets.DOCKERHUB_USERNAME }} --password-stdin
+
+      - name: Build image and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./simple-api
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-simple-api:latest
+          push: true
+
+      - name: Build image and push database
+        uses: docker/build-push-action@v6
+        with:
+          context: ./database
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-database:latest
+          push: true
+
+      - name: Build image and push httpd
+        uses: docker/build-push-action@v6
+        with:
+          context: ./http-server
+          tags: ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-httpd:latest
+          push: true
