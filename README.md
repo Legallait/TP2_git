@@ -149,3 +149,61 @@ Un personal access token est utilisé à la place du mot de passe : il peut êtr
     - `nicolases/tp-devops-simple-api`
     - `nicolases/tp-devops-database`
     - `nicolases/tp-devops-httpd`
+
+---
+
+### Partie 3 : Setup Quality Gate
+
+#### Objectif
+
+Analyser automatiquement la qualité du code à chaque push avec SonarQube Cloud (anciennement SonarCloud) : bugs, vulnérabilités, code smells, duplications et couverture de tests.
+
+#### Configuration SonarQube Cloud
+
+1. Connexion avec GitHub et import du repo `TP2_git`. L'organisation est créée à l'import.
+2. Projet passé en **Public** (Administration > Permissions) : le plan gratuit n'analyse que les projets publics, le repo GitHub a donc aussi été rendu public.
+3. **Automatic Analysis désactivée** (Administration > Analysis method) : pour un projet Java, l'analyse doit passer par la CI, et SonarQube Cloud refuse deux méthodes d'analyse en même temps.
+4. Génération d'un token (My Account > Access Tokens), ajouté dans GitHub comme secret `SONAR_TOKEN`.
+
+| Paramètre | Valeur |
+|---|---|
+| Organization key | `legallait` |
+| Project key | `Legallait_TP2_git` |
+| Quality Gate | Sonar way (par défaut) |
+
+#### Modifications du job `test-backend`
+
+```yaml
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # ...
+
+      - name: SonarCloud analysis
+        run: mvn -B verify org.sonarsource.scanner.maven:sonar-maven-plugin:sonar -Dsonar.projectKey=Legallait_TP2_git -Dsonar.organization=legallait -Dsonar.host.url=https://sonarcloud.io -Dsonar.token=${{ secrets.SONAR_TOKEN }} --file ./simple-api/pom.xml
+```
+
+| Élément | Rôle |
+|---|---|
+| `fetch-depth: 0` | Récupère tout l'historique git, nécessaire à Sonar pour identifier le nouveau code |
+| `-B` | Batch mode, sortie non interactive adaptée à la CI |
+| `org.sonarsource.scanner.maven:sonar-maven-plugin:sonar` | Lance l'analyse Sonar via le plugin Maven |
+| `-Dsonar.projectKey` / `-Dsonar.organization` | Identifient le projet sur SonarQube Cloud |
+| `-Dsonar.host.url` | Serveur d'analyse |
+| `-Dsonar.token` | Authentification via le secret GitHub |
+
+La couverture de tests est remontée automatiquement grâce au plugin JaCoCo déjà configuré dans le `pom.xml`.
+
+#### Problèmes rencontrés
+
+**Préfixe `sonar` introuvable.** La commande du sujet (`mvn ... sonar:sonar`) échouait avec `No plugin found for prefix 'sonar'` : le plugin Sonar n'est ni déclaré dans le `pom.xml`, ni dans les plugin groups de Maven. Correction : appel du plugin par son nom complet `org.sonarsource.scanner.maven:sonar-maven-plugin:sonar`.
+
+**`sonar.login` déprécié.** Remplacé par `sonar.token`, le paramètre attendu par les versions récentes du scanner.
+
+**Projet privé.** Le plan gratuit refuse l'analyse des projets privés : le repo GitHub et le projet SonarQube Cloud ont été passés en public. Les secrets GitHub restent chiffrés et invisibles.
+
+#### Résultat
+
+- Pipeline au vert en 2 min 37 s : tests, analyse Sonar, puis build et push des images.
+- Rapport disponible sur SonarQube Cloud avec le statut de la Quality Gate, les notes Reliability, Security et Maintainability, et la couverture de tests.
