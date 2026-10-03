@@ -20,6 +20,7 @@
         <validation.version>3.1.0</validation.version>
         <tomcat.version>10.1.60</tomcat.version>
         <postgresql.version>42.7.13</postgresql.version>
+        <log4j2.version>2.25.5</log4j2.version>
     </properties>
 
     <dependencies>

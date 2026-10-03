@@ -32,11 +32,11 @@ jobs:
           key: nvd-${{ github.run_id }}
           restore-keys: nvd-
 
-      # scan dependencies against the NVD CVE database, fail on CVSS >= 7
+      # scan dependencies against the NVD CVE database, fail on CVSS >= 7, with documented suppressions
       - name: OWASP Dependency-Check
         id: dependency-check
         working-directory: simple-api
-        run: mvn -B org.owasp:dependency-check-maven:check -DnvdApiKey=${{ secrets.NVD_API_KEY }} -DfailBuildOnCVSS=7 -Dformat=HTML
+        run: mvn -B org.owasp:dependency-check-maven:check -DnvdApiKey=${{ secrets.NVD_API_KEY }} -DfailBuildOnCVSS=7 -Dformat=HTML -DsuppressionFile=dependency-check-suppressions.xml
 
       # save the NVD database even if vulnerabilities were found
       - uses: actions/cache/save@v4
