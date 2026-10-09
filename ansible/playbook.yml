@@ -20,11 +20,11 @@
     db_password: "{{ vault_db_password }}"
     front_image: tp-devops-front
     front_container: front
-    api_replicas: 2
+    api_replicas: 1
   roles:
     - network
     - database
     - app
     - front
-   # - monitoring
+    - monitoring
     - proxy
