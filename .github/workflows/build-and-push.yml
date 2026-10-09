@@ -31,3 +31,28 @@ jobs:
           tags: |
             ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:latest
             ${{ secrets.DOCKERHUB_USERNAME }}/tp-devops-${{ matrix.image }}:${{ github.sha }}
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-24.04
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install Ansible
+        run: pip install ansible
+
+      - name: Write SSH key
+        run: |
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key
+          chmod 600 key
+
+      - name: Deploy with Ansible
+        working-directory: ansible
+        env:
+          ANSIBLE_HOST_KEY_CHECKING: "False"
+        run: ansible-playbook -i inventories/setup.yml playbook.yml -e ansible_ssh_private_key_file=../key
