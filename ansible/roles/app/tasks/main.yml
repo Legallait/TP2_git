@@ -1,7 +1,7 @@
 ---
 - name: Run backend API
   community.docker.docker_container:
-    name: "{{ api_container }}"
+    name: "{{ api_container }}-{{ item }}"
     image: "{{ dockerhub_user }}/{{ api_image }}:latest"
     pull: true
     restart_policy: always
@@ -12,3 +12,10 @@
       SPRING_DATASOURCE_URL: "jdbc:postgresql://{{ db_container }}:5432/{{ db_name }}"
       SPRING_DATASOURCE_USERNAME: "{{ db_user }}"
       SPRING_DATASOURCE_PASSWORD: "{{ db_password }}"
+
+  loop: "{{ range(1, api_replicas + 1) | list }}"
+
+- name: Remove old single API container
+  community.docker.docker_container:
+    name: "{{ api_container }}"
+    state: absent
