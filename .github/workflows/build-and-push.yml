@@ -48,7 +48,7 @@ jobs:
 
       - name: Write SSH key
         run: |
-          echo "${{ secrets.SSH_PRIVATE_KEY }}" > key
+          printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > key
           chmod 600 key
 
       - name: Deploy with Ansible
