@@ -12,8 +12,8 @@
       SPRING_DATASOURCE_URL: "jdbc:postgresql://{{ db_container }}:5432/{{ db_name }}"
       SPRING_DATASOURCE_USERNAME: "{{ db_user }}"
       SPRING_DATASOURCE_PASSWORD: "{{ db_password }}"
-      JAVA_TOOL_OPTIONS: "-Xmx192m -XX:MaxMetaspaceSize=96m -Xss512k"
-
+      JAVA_TOOL_OPTIONS: "-Xmx128m -XX:MaxMetaspaceSize=96m -Xss512k -XX:+UseSerialGC"
+      
   loop: "{{ range(1, api_replicas + 1) | list }}"
 
 - name: Remove old single API container
