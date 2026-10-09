@@ -26,5 +26,5 @@
     - database
     - app
     - front
-    - monitoring
+   # - monitoring
     - proxy
