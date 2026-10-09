@@ -47,13 +47,15 @@ jobs:
       - name: Install Ansible
         run: pip install ansible
 
-      - name: Write SSH key
+      - name: Write SSH key and vault password
         run: |
           printf '%s\n' "${{ secrets.SSH_PRIVATE_KEY }}" | tr -d '\r' > key
           chmod 600 key
+          printf '%s' "${{ secrets.ANSIBLE_VAULT_PASSWORD }}" > vault_pass
+          chmod 600 vault_pass
 
       - name: Deploy with Ansible
         working-directory: ansible
         env:
           ANSIBLE_HOST_KEY_CHECKING: "False"
-        run: ansible-playbook -i inventories/setup.yml playbook.yml -e ansible_ssh_private_key_file=../key
+        run: ansible-playbook -i inventories/setup.yml playbook.yml -e ansible_ssh_private_key_file=../key --vault-password-file ../vault_pass

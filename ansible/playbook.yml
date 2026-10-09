@@ -16,8 +16,8 @@
     db_container: database
     api_container: simple-api
     db_name: db
-    db_user: usr
-    db_password: pwd
+    db_user: "{{ vault_db_user }}"
+    db_password: "{{ vault_db_password }}"
     front_image: tp-devops-front
     front_container: front
   roles:
