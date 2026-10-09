@@ -1,0 +1,52 @@
+---
+- name: Create monitoring config directory
+  file:
+    path: /opt/monitoring
+    state: directory
+
+- name: Copy Alloy config
+  copy:
+    src: config.alloy
+    dest: /opt/monitoring/config.alloy
+
+- name: Copy Grafana datasource
+  copy:
+    src: datasources.yml
+    dest: /opt/monitoring/datasources.yml
+
+- name: Run Loki
+  community.docker.docker_container:
+    name: loki
+    image: grafana/loki:latest
+    restart_policy: always
+    networks:
+      - name: app-network
+    volumes:
+      - loki-data:/loki
+
+- name: Run Alloy
+  community.docker.docker_container:
+    name: alloy
+    image: grafana/alloy:latest
+    restart_policy: always
+    command: run /etc/alloy/config.alloy
+    networks:
+      - name: app-network
+    volumes:
+      - /opt/monitoring/config.alloy:/etc/alloy/config.alloy:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+
+- name: Run Grafana
+  community.docker.docker_container:
+    name: grafana
+    image: grafana/grafana:latest
+    restart_policy: always
+    networks:
+      - name: app-network
+    env:
+      GF_SECURITY_ADMIN_PASSWORD: "{{ vault_grafana_password }}"
+      GF_SERVER_ROOT_URL: "http://nicolas.estermann.takima.school/grafana/"
+      GF_SERVER_SERVE_FROM_SUB_PATH: "true"
+    volumes:
+      - /opt/monitoring/datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      - grafana-data:/var/lib/grafana
