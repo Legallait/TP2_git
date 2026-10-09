@@ -18,8 +18,11 @@
     db_name: db
     db_user: usr
     db_password: pwd
+    front_image: tp-devops-front
+    front_container: front
   roles:
     - network
     - database
     - app
+    - front
     - proxy

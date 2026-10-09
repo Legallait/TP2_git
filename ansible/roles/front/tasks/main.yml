@@ -1,0 +1,9 @@
+---
+- name: Run front
+  community.docker.docker_container:
+    name: "{{ front_container }}"
+    image: "{{ dockerhub_user }}/{{ front_image }}:latest"
+    pull: true
+    restart_policy: always
+    networks:
+      - name: app-network

@@ -14,6 +14,7 @@ jobs:
           - { image: simple-api, context: simple-api }
           - { image: database, context: database }
           - { image: httpd, context: http-server }
+          - { image: front, context: front }
     steps:
       - uses: actions/checkout@v4
 
